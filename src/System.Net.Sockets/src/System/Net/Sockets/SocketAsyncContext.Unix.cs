@@ -131,6 +131,7 @@ namespace System.Net.Sockets
             public byte[] SocketAddress;
             public int SocketAddressLen;
             public CancellationTokenRegistration CancellationRegistration;
+            private int? _tryCompleteThreadId = null;
 
             public ManualResetEventSlim Event
             {
@@ -157,7 +158,9 @@ namespace System.Net.Sockets
             {
                 TraceWithContext(context, "Enter");
 
+                _tryCompleteThreadId = Thread.CurrentThread.ManagedThreadId;
                 bool result = DoTryComplete(context);
+                _tryCompleteThreadId = null;
 
                 TraceWithContext(context, $"Exit, result={result}");
 
@@ -196,6 +199,8 @@ namespace System.Net.Sockets
             {
                 Trace("Enter");
 
+                int tryCancelThreadId = Thread.CurrentThread.ManagedThreadId;
+
                 // We're already canceling, so we don't need to still be hooked up to listen to cancellation.
                 // The cancellation request could also be caused by something other than the token, so it's
                 // important we clean it up, regardless.
@@ -210,9 +215,21 @@ namespace System.Net.Sockets
                     switch ((State)state)
                     {
                         case State.Running:
-                            // A completion attempt is in progress. Keep busy-waiting.
-                            Trace("Busy wait");
-                            spinWait.SpinOnce();
+                            if (_tryCompleteThreadId == tryCancelThreadId)
+                            {
+                                // Sometimes TryComplete re-enters to call ReleaseHandle on itself due to socket close,
+                                // which then calls back into TryCancel on the same SocketAsyncContext and gets stuck
+                                Trace("Exit, previously cancelled at completion");
+
+                                // Could return any, caller is StopAndAbort() which doesn't check return code
+                                return true;
+                            }
+                            else
+                            {
+                                // A completion attempt is in progress. Keep busy-waiting.
+                                Trace("Busy wait");
+                                spinWait.SpinOnce();
+                            }
                             break;
 
                         case State.Complete:
