@@ -57,12 +57,41 @@ namespace System.Net.Sockets
 
         // In debug builds, force there to be 2 engines. In release builds, use half the number of processors when
         // there are at least 6. The lower bound is to avoid using multiple engines on systems which aren't servers.
-        private static readonly int EngineCount =
-#if DEBUG
-            2;
-#else
-            Environment.ProcessorCount >= 6 ? Environment.ProcessorCount / 2 : 1;
-#endif
+        private static readonly int EngineCount = GetEngineCount();
+
+        private static int GetEngineCount()
+        {
+            // The responsibility of SocketAsyncEngine is to get notifications from epoll|kqueue
+            // and schedule corresponding work items to ThreadPool (socket reads and writes).
+            //
+            // Using TechEmpower benchmarks that generate a LOT of SMALL socket reads and writes under a VERY HIGH load
+            // we have observed that a single engine is capable of keeping busy up to thirty x64 and eight ARM64 CPU Cores.
+            //
+            // The vast majority of real-life scenarios is never going to generate such a huge load (hundreds of thousands of requests per second)
+            // and having a single producer should be almost always enough.
+            //
+            // We want to be sure that we can handle extreme loads and that's why we have decided to use these values.
+            //
+            // It's impossible to predict all possible scenarios so we have added a possibility to configure this value using environment variables.
+            if (uint.TryParse(Environment.GetEnvironmentVariable("DOTNET_SYSTEM_NET_SOCKETS_THREAD_COUNT"), out uint count))
+            {
+                return (int)count;
+            }
+
+            // When inlining continuations, we default to ProcessorCount to make sure event threads cannot be a bottleneck.
+            if (InlineSocketCompletionsEnabled)
+            {
+                return Environment.ProcessorCount;
+            }
+
+            Architecture architecture = RuntimeInformation.ProcessArchitecture;
+            int coresPerEngine = architecture == Architecture.Arm64 || architecture == Architecture.Arm
+                ? 8
+                : 30;
+
+            return Math.Max(1, (int)Math.Round(Environment.ProcessorCount / (double)coresPerEngine));
+        }
+
         //
         // The current engines. We replace an engine when it runs out of "handle" values.
         // Must be accessed under s_lock.
