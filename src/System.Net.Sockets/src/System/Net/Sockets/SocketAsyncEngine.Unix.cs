@@ -78,17 +78,7 @@ namespace System.Net.Sockets
                 return (int)count;
             }
 
-            // When inlining continuations, we default to ProcessorCount to make sure event threads cannot be a bottleneck.
-            if (InlineSocketCompletionsEnabled)
-            {
-                return Environment.ProcessorCount;
-            }
-
-            Architecture architecture = RuntimeInformation.ProcessArchitecture;
-            int coresPerEngine = architecture == Architecture.Arm64 || architecture == Architecture.Arm
-                ? 8
-                : 30;
-
+            int coresPerEngine = 8;
             return Math.Max(1, (int)Math.Round(Environment.ProcessorCount / (double)coresPerEngine));
         }
 
